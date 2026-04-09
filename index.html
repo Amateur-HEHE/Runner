@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Neon Infinite Chaos - Solo</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #050505;
+      color: white;
+      font-family: 'Courier New', Courier, monospace;
+    }
+    canvas { 
+      display: block; 
+      margin: auto; 
+      box-shadow: 0 0 50px rgba(0, 255, 255, 0.2);
+    }
+    #ui-layer {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #score-board {
+      position: absolute;
+      top: 20px;
+      font-size: 28px;
+      font-weight: bold;
+      text-shadow: 0 0 10px #00aaff;
+      display: none; 
+      width: 100%;
+      text-align: center;
+    }
+    #overlay {
+      text-align: center;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 40px;
+      border: 2px solid #00aaff;
+      border-radius: 15px;
+      box-shadow: 0 0 30px #00aaff;
+    }
+    h1 { margin: 0 0 10px 0; font-size: 48px; text-transform: uppercase; color: #fff; text-shadow: 0 0 20px #00aaff, 0 0 40px #00aaff; }
+    p { font-size: 18px; color: #aaa; }
+    .blink { animation: blinker 1.5s linear infinite; font-weight: bold; color: #00aaff; margin-top: 20px; }
+    @keyframes blinker { 50% { opacity: 0; } }
+  </style>
+</head>
+
+<body>
+<div id="ui-layer">
+  <div id="score-board">SCORE: <span id="s1" style="color:#00aaff">0</span></div>
+  <div id="overlay">
+    <h1 id="title-text">Neon Chaos</h1>
+    <p>ARROWS or WASD to Move</p>
+    <p>SPACE or W to Jump | SHIFT or F to Dash</p>
+    <p><strong>Stomp red enemies. Don't fall!</strong></p>
+    <div class="blink" id="start-prompt">PRESS [ENTER] TO START</div>
+  </div>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+canvas.width = 900;
+canvas.height = 500;
+
+// Game State
+let gameState = "START"; 
+let score = 0;
+let cameraX = 0;
+let lastX = 0;
+let shakeTime = 0;
+
+let platforms = [], coins = [], enemies = [], particles = [];
+let player = null; 
+
+const gravity = 0.8;
+const keys = {};
+
+document.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if(e.key === "Enter") {
+    if(gameState === "START" || gameState === "GAMEOVER") startGame();
+  }
+});
+document.addEventListener("keyup", e => keys[e.key] = false);
+
+function startGame() {
+  score = 0;
+  cameraX = 0; lastX = 0;
+  platforms = []; coins = []; enemies = []; particles = [];
+  
+  // Safe starting ground
+  platforms.push({x: 0, y: 400, w: 600, h: 20});
+  lastX = 600;
+
+  // Initialize Player (The Blue One)
+  player = {
+    x: 150, y: 300, r: 15, 
+    dx: 0, dy: 0, 
+    color: "#00aaff", 
+    dashCooldown: 0, 
+    history: [],
+    grounded: false
+  };
+
+  document.getElementById("overlay").style.display = "none";
+  document.getElementById("score-board").style.display = "block";
+  gameState = "PLAYING";
+}
+
+function gameOver() {
+  gameState = "GAMEOVER";
+  shakeTime = 20; 
+  document.getElementById("overlay").style.display = "block";
+  document.getElementById("title-text").innerText = "CONNECTION LOST";
+  document.getElementById("title-text").style.color = "#ff0044";
+  document.getElementById("title-text").style.textShadow = "0 0 20px #ff0044";
+  document.getElementById("start-prompt").innerText = "PRESS [ENTER] TO RECONNECT";
+}
+
+function generateWorld() {
+  while (lastX < cameraX + canvas.width + 500) {
+    let width = 150 + Math.random() * 200;
+    let gap = 80 + Math.random() * 120;
+    let y = 200 + Math.random() * 220; 
+
+    platforms.push({x: lastX + gap, y: y, w: width, h: 15});
+
+    if(Math.random() < 0.7) {
+      coins.push({x: lastX + gap + width/2, y: y - 50, col: false});
+    }
+
+    if(Math.random() < 0.4) {
+      enemies.push({x: lastX + gap + 20, y: y - 30, w: 30, h: 30, dir: 1, range: width - 40, startX: lastX + gap + 20});
+    }
+    lastX += gap + width;
+  }
+}
+
+function spawnParticles(x, y, color, amount = 10){
+  for(let i = 0; i < amount; i++){
+    particles.push({
+      x, y,
+      dx: (Math.random() - 0.5) * 12,
+      dy: (Math.random() - 0.5) * 12,
+      life: 15 + Math.random() * 15,
+      color
+    });
+  }
+}
+
+function updatePlayer() {
+  // Movement Controls (Support for Arrows and WASD)
+  if (keys["ArrowLeft"] || keys["a"]) player.dx -= 1.8;
+  if (keys["ArrowRight"] || keys["d"]) player.dx += 1.8;
+  
+  // Friction
+  player.dx *= 0.82;
+
+  // Jump (Space, W, or ArrowUp)
+  if ((keys[" "] || keys["w"] || keys["ArrowUp"]) && player.grounded) {
+    player.dy = -16;
+    player.grounded = false;
+    spawnParticles(player.x, player.y + player.r, "#fff", 5);
+  }
+
+  // Dash (Shift or F)
+  if ((keys["Shift"] || keys["f"]) && player.dashCooldown <= 0) {
+    player.dx *= 5;
+    player.dashCooldown = 40; 
+    spawnParticles(player.x, player.y, player.color, 15);
+  }
+  if (player.dashCooldown > 0) player.dashCooldown--;
+
+  // Physics
+  player.dy += gravity;
+  player.x += player.dx;
+  player.y += player.dy;
+
+  // Visual Trail
+  player.history.push({x: player.x, y: player.y});
+  if (player.history.length > 10) player.history.shift();
+
+  // Death by falling
+  if (player.y > canvas.height + 100) gameOver();
+
+  // Platform Collision
+  player.grounded = false;
+  platforms.forEach(pl => {
+    if (player.x + player.r > pl.x && player.x - player.r < pl.x + pl.w &&
+        player.y + player.r > pl.y && player.y - player.r < pl.y + pl.h) {
+      if (player.dy > 0 && player.y < pl.y + 5) { 
+        player.y = pl.y - player.r;
+        player.dy = 0;
+        player.grounded = true;
+      }
+    }
+  });
+}
+
+function update() {
+  if (gameState === "PLAYING") {
+    generateWorld();
+    updatePlayer();
+
+    // Collect Coins
+    coins.forEach(c => {
+      if (!c.col) {
+        let dx = player.x - c.x, dy = player.y - c.y;
+        if (Math.sqrt(dx*dx + dy*dy) < player.r + 15) {
+          c.col = true;
+          score += 10;
+          spawnParticles(c.x, c.y, "#ffff00", 12);
+        }
+      }
+    });
+
+    // Enemy AI & Collision
+    enemies.forEach((e, i) => {
+      e.x += e.dir * 2.5;
+      if (e.x > e.startX + e.range || e.x < e.startX) e.dir *= -1;
+
+      if (player.x + player.r > e.x && player.x - player.r < e.x + e.w &&
+          player.y + player.r > e.y && player.y - player.r < e.y + e.h) {
+        
+        // Stomp mechanic
+        if (player.dy > 0 && player.y < e.y) {
+          enemies.splice(i, 1);
+          player.dy = -14; 
+          score += 50;
+          shakeTime = 8;
+          spawnParticles(e.x + e.w/2, e.y + e.h/2, "#ff0044", 20);
+        } else {
+          gameOver();
+        }
+      }
+    });
+
+    // Particle Cleanup
+    particles.forEach((p, i) => {
+      p.x += p.dx; p.y += p.dy; p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    });
+
+    // Clean up off-screen objects
+    platforms = platforms.filter(p => p.x > cameraX - 500);
+    coins = coins.filter(c => c.x > cameraX - 500);
+    enemies = enemies.filter(e => e.x > cameraX - 500);
+
+    // Smooth Camera
+    let targetCameraX = player.x - 250;
+    cameraX += (targetCameraX - cameraX) * 0.08;
+
+    document.getElementById("s1").innerText = score;
+    
+  } else if (gameState === "START") {
+    cameraX += 1; 
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  
+  if (shakeTime > 0) {
+    ctx.translate((Math.random()-0.5)*7, (Math.random()-0.5)*7);
+    shakeTime--;
+  }
+
+  // Neon Grid
+  ctx.strokeStyle = "rgba(0, 170, 255, 0.1)";
+  let offsetX = cameraX % 60;
+  for(let i=0; i<canvas.width + 60; i+=60){
+    ctx.beginPath(); ctx.moveTo(i - offsetX, 0); ctx.lineTo(i - offsetX, canvas.height); ctx.stroke();
+  }
+
+  // Draw Platforms
+  platforms.forEach(p => {
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "#00ffff";
+    ctx.fillStyle = "rgba(0, 255, 255, 0.7)";
+    ctx.fillRect(p.x - cameraX, p.y, p.w, p.h);
+  });
+
+  // Draw Coins
+  coins.forEach(c => {
+    if (!c.col) {
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = "#ffff00";
+      ctx.fillStyle = "#ffff00";
+      ctx.beginPath();
+      ctx.arc(c.x - cameraX, c.y + Math.sin(Date.now()*0.01)*5, 7, 0, Math.PI*2);
+      ctx.fill();
+    }
+  });
+
+  // Draw Enemies
+  enemies.forEach(e => {
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "#ff0044";
+    ctx.fillStyle = "#ff0044";
+    ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+  });
+
+  // Draw Player
+  if (player) {
+    // Trail
+    ctx.beginPath();
+    ctx.moveTo(player.history[0].x - cameraX, player.history[0].y);
+    player.history.forEach(pos => ctx.lineTo(pos.x - cameraX, pos.y));
+    ctx.strokeStyle = player.color;
+    ctx.lineWidth = player.r * 1.2;
+    ctx.globalAlpha = 0.3;
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+
+    // Body
+    ctx.shadowBlur = 25;
+    ctx.shadowColor = player.color;
+    ctx.fillStyle = player.color;
+    ctx.beginPath();
+    ctx.arc(player.x - cameraX, player.y, player.r, 0, Math.PI*2);
+    ctx.fill();
+    
+    // Eye
+    ctx.fillStyle = "#fff";
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(player.x - cameraX + (player.dx > 0 ? 5 : -5), player.y - 3, 4, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // Draw Particles
+  particles.forEach(p => {
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = p.color;
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life / 30;
+    ctx.fillRect(p.x - cameraX, p.y, 4, 4);
+  });
+
+  ctx.restore();
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
